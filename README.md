@@ -85,6 +85,14 @@ docker compose cp app:/data/uploads ./backup-fotos-$(date +%F)
 
 Restaurar o banco: `docker compose exec -T db psql -U metas metas < backup-metas-AAAA-MM-DD.sql`.
 
+### Esqueceu a senha do administrador?
+
+```bash
+docker compose exec app node scripts/nova-senha.js --email andre@suaempresa.com.br
+```
+
+O comando mostra um link de uso único para criar uma nova senha.
+
 ## Trazer as metas do painel antigo
 
 1. Cadastre a pessoa na Administração (ou use o próprio administrador).
@@ -122,6 +130,7 @@ public/app.html    painel (metas, time, administração e apresentação)
 public/login.html  tela de login
 public/senha.html  criação/redefinição de senha
 scripts/importar.js  migração do painel antigo
+scripts/nova-senha.js  link de nova senha pelo servidor
 ```
 
 ### API (resumo)
