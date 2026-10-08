@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Criar senha · Metas Conecta</title>
+<link rel="icon" href="/favicon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=Ubuntu:wght@500;700&display=swap">
+<link rel="stylesheet" href="/auth.css">
+<script src="/brand.js"></script>
+</head>
+<body>
+<aside class="side">
+  <img class="logo" id="logo" alt="Conecta">
+  <div class="txt">
+    <h2>Painel de Metas</h2>
+    <p>Crie sua senha para acessar suas metas.</p>
+    <div class="track" aria-hidden="true"><i></i><img id="rocket" alt=""></div>
+  </div>
+</aside>
+<main>
+  <form class="card" id="pwForm" novalidate>
+    <h1 id="title">Criar senha</h1>
+    <p class="lead" id="lead">Verificando o link…</p>
+    <div id="fields" hidden>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <label>Nova senha<input type="password" id="pw" autocomplete="new-password" minlength="8" required></label>
+        <label>Repita a senha<input type="password" id="pw2" autocomplete="new-password" required></label>
+        <p class="hint">Pelo menos 8 caracteres, com letras e números.</p>
+        <div class="msg err" id="msg" role="alert"></div>
+        <button id="go">Salvar e entrar</button>
+      </div>
+    </div>
+  </form>
+</main>
+<script>
+document.getElementById('logo').src=BRAND.logoTagWhite;
+document.getElementById('rocket').src=BRAND.rocket;
+const $=id=>document.getElementById(id);
+const token=new URLSearchParams(location.search).get('token')||'';
+fetch('/api/auth/link?token='+encodeURIComponent(token)).then(async r=>{
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){$('title').textContent='Link inválido';$('lead').textContent=d.error||'Este link expirou ou já foi usado.';return}
+  $('title').textContent=d.purpose==='convite'?'Bem-vindo(a), '+d.name.split(' ')[0]+'!':'Nova senha';
+  $('lead').textContent=(d.purpose==='convite'?'Crie sua senha para acessar o painel. ':'Crie uma nova senha. ')+'Seu login é '+d.email+'.';
+  $('fields').hidden=false;$('pw').focus();
+});
+$('pwForm').addEventListener('submit',async e=>{
+  e.preventDefault();const m=$('msg');m.textContent='';
+  if($('pw').value!==$('pw2').value){m.textContent='As duas senhas não são iguais.';return}
+  $('go').disabled=true;
+  try{
+    const r=await fetch('/api/auth/definir-senha',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'metas'},body:JSON.stringify({token,password:$('pw').value})});
+    const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Não foi possível salvar a senha.');
+    location.href='/';
+  }catch(x){m.textContent=x.message;$('go').disabled=false}
+});
+</script>
+</body>
+</html>

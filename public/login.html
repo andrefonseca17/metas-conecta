@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entrar · Metas Conecta</title>
+<link rel="icon" href="/favicon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=Ubuntu:wght@500;700&display=swap">
+<link rel="stylesheet" href="/auth.css">
+<script src="/brand.js"></script>
+</head>
+<body>
+<aside class="side">
+  <img class="logo" id="logo" alt="Conecta">
+  <div class="txt">
+    <h2>Painel de Metas</h2>
+    <p>Acompanhe suas metas do ano, registre as entregas com fotos e gere a apresentação com um clique.</p>
+    <div class="track" aria-hidden="true"><i></i><img id="rocket" alt=""></div>
+  </div>
+</aside>
+<main>
+  <form class="card" id="loginForm" novalidate>
+    <h1>Entrar</h1>
+    <p class="lead">Use o e-mail cadastrado pelo administrador.</p>
+    <label>E-mail<input type="email" id="email" autocomplete="username" required></label>
+    <label>Senha<input type="password" id="password" autocomplete="current-password" required></label>
+    <div class="msg" id="msg" role="alert"></div>
+    <button id="go">Entrar</button>
+    <button type="button" class="link" id="forgot">Esqueci minha senha</button>
+  </form>
+</main>
+<script>
+document.getElementById('logo').src=BRAND.logoTagWhite;
+document.getElementById('rocket').src=BRAND.rocket;
+const $=id=>document.getElementById(id);
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'metas'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Não foi possível entrar. Tente de novo.');return d;
+}
+$('loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();const m=$('msg');m.className='msg err';m.textContent='';
+  if(!$('email').value||!$('password').value){m.textContent='Preencha e-mail e senha.';return}
+  $('go').disabled=true;
+  try{await post('/api/auth/login',{email:$('email').value,password:$('password').value});location.href='/'}
+  catch(x){m.textContent=x.message;$('go').disabled=false}
+});
+$('forgot').addEventListener('click',async()=>{
+  const m=$('msg');m.className='msg';
+  const cfg=await fetch('/api/config').then(r=>r.json()).catch(()=>({}));
+  if(!cfg.email){m.textContent='Peça ao administrador do painel um link para criar uma nova senha.';return}
+  if(!$('email').value){m.className='msg err';m.textContent='Digite seu e-mail acima e clique de novo em "Esqueci minha senha".';return}
+  try{await post('/api/auth/esqueci',{email:$('email').value});m.className='msg ok';m.textContent='Se o e-mail estiver cadastrado, você vai receber um link para criar uma nova senha.'}
+  catch(x){m.className='msg err';m.textContent=x.message}
+});
+</script>
+</body>
+</html>

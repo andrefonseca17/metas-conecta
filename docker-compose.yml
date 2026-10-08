@@ -1,0 +1,55 @@
+# Painel de Metas – Conecta
+# Subir:      docker compose up -d --build
+# Ver logs:   docker compose logs -f app
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: metas
+      POSTGRES_USER: metas
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no arquivo .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metas -d metas"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://metas:${DB_PASSWORD}@db:5432/metas
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
+      - ./migracao:/app/migracao:ro
+    # Sem HTTPS automático (rede interna): descomente a linha abaixo e acesse http://IP-DO-SERVIDOR:3000
+    # ports: ["3000:3000"]
+
+  # HTTPS automático com Let's Encrypt. Precisa de um domínio apontando para a VPS e das portas 80 e 443 livres.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMINIO: ${DOMINIO:?Defina DOMINIO no arquivo .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:
