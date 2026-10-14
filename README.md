@@ -7,7 +7,7 @@ Sistema web para acompanhar as metas do ano de cada colaborador, com times e sup
 | Perfil | Vê | Edita |
 |---|---|---|
 | **Colaborador** | Só as próprias metas | As próprias metas, fotos e ideias |
-| **Supervisor** | As próprias metas e as de todas as pessoas dos times que supervisiona | Só as próprias metas |
+| **Supervisor** | As próprias metas e as de todas as pessoas dos times que supervisiona | As próprias metas; cria os próprios times e cadastra/gerencia os colaboradores deles |
 | **Administrador** | Tudo | As próprias metas; cadastra pessoas e times |
 
 As regras ficam no servidor: um colaborador não consegue abrir a meta de outro nem trocando o endereço no navegador. Fotos seguem a mesma regra.
@@ -15,6 +15,7 @@ As regras ficam no servidor: um colaborador não consegue abrir a meta de outro 
 Telas:
 
 - **Minhas metas**: painel com peso, frentes, etapas, fotos (antes/depois), ideias, troca de ano, importação do Trello e botão **Gerar apresentação**.
+- **Gerenciar meus times** (supervisor): criar e renomear times, cadastrar colaboradores (sempre com perfil Colaborador), gerar links de convite/nova senha, mover pessoas entre os próprios times e desativar quem saiu. Supervisores, troca de e-mail e pessoas de outros times continuam só com o administrador. Cada cadastro registra quem o fez.
 - **Meu time / Times**: atingimento de cada pessoa do time, média do time e acesso às metas de cada um (somente leitura, com a opção de gerar a apresentação da pessoa).
 - **Administração**: cadastro de pessoas, perfis, times e supervisores; links de convite e de nova senha.
 
@@ -145,5 +146,13 @@ scripts/nova-senha.js  link de nova senha pelo servidor
 | POST/GET/DELETE | `/api/fotos[/id]` | envio e exclusão: dono; leitura: quem pode ver a pessoa |
 | GET | `/api/pessoas`, `/api/times` | logado (filtrado pelo perfil) |
 | GET/POST/PATCH | `/api/admin/usuarios`, `/api/admin/times` | admin |
+| GET | `/api/time/gestao` | supervisor (seus times e pessoas) |
+| POST/PATCH | `/api/time/times[/id]`, `/api/time/pessoas[/id]`, POST `/api/time/pessoas/:id/link` | supervisor, só nos próprios times e só colaboradores |
 
 Toda requisição que altera dados precisa do cabeçalho `X-Requested-With: metas` (proteção contra CSRF).
+
+As ações de gestão (cadastros, alterações, links gerados) ficam registradas na tabela `audit` do banco:
+
+```bash
+docker compose exec db psql -U metas metas -c "select a.at, u.name as quem, a.action, t.name as pessoa from audit a left join users u on u.id=a.actor_id left join users t on t.id=a.target_id order by a.at desc limit 30;"
+```

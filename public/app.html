@@ -1319,7 +1319,14 @@ async function renderTeam(){
   let ps,ts;
   try{[ps,ts]=await Promise.all([api('GET','/api/pessoas'),api('GET','/api/times')])}catch(e){v.innerHTML='<div class="banner">'+esc(e.message)+'</div>';return}
   const people=ps.pessoas,teams=ts.times,isAdmin=S.me.role==='admin';
-  if(!teams.length&&!isAdmin){v.innerHTML='<header class="top"><div><div class="eyebrow">Acompanhamento</div><h1>Meu time</h1></div></header><div class="banner info">Você ainda não é supervisor de nenhum time. Peça ao administrador para te definir como supervisor.</div>';return}
+  const canManage=S.me.role==='supervisor';
+  if(!teams.length&&!isAdmin){
+    v.innerHTML='<header class="top"><div><div class="eyebrow">Acompanhamento</div><h1>Meu time</h1></div></header>'+
+      (canManage?'<div class="banner info">Você ainda não tem um time. Crie o primeiro em "+ Novo time" e depois cadastre as pessoas.</div><div id="gestao"></div>'
+               :'<div class="banner info">Você ainda não é supervisor de nenhum time. Peça ao administrador para te definir como supervisor.</div>');
+    if(canManage)renderGestao();
+    return;
+  }
   if(T.team===null||(T.team!=='__all'&&!teams.some(t=>t.id===T.team))) T.team=teams[0]?teams[0].id:'__all';
   const team=teams.find(t=>t.id===T.team);
   const members=people.filter(p=>p.active!==false&&p.id!==S.me.id&&(T.team==='__all'||p.team_id===T.team));
@@ -1329,10 +1336,12 @@ async function renderTeam(){
     '<div class="ctrls">'+(teams.length>1||isAdmin?'<select id="tmSel" aria-label="Time">'+teams.map(t=>'<option value="'+t.id+'"'+(t.id===T.team?' selected':'')+'>'+esc(t.name)+'</option>').join('')+(isAdmin?'<option value="__all"'+(T.team==='__all'?' selected':'')+'>Todas as pessoas</option>':'')+'</select>':'')+
     '<select id="tmAno" aria-label="Ano">'+anos.map(a=>'<option'+(a===T.ano?' selected':'')+'>'+a+'</option>').join('')+'</select></div></header>'+
     '<div class="cards4" id="tmStats"></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Pessoa</th><th class="num">Metas</th><th>Atingimento ponderado</th><th>Situação</th><th class="num">Fotos</th><th>Atualizado</th><th></th></tr></thead><tbody id="tmRows"><tr><td colspan="7" class="note">Carregando metas…</td></tr></tbody></table></div>'+
-    '<p class="note">O atingimento ponderado soma o peso de cada meta multiplicado pelo andamento. A porcentagem ao lado mostra quanto isso representa do total possível da pessoa.</p>';
+    '<p class="note">O atingimento ponderado soma o peso de cada meta multiplicado pelo andamento. A porcentagem ao lado mostra quanto isso representa do total possível da pessoa.</p>'+
+    (canManage?'<div id="gestao"></div>':'');
   $('#tmSel')?.addEventListener('change',e=>{T.team=e.target.value;renderTeam()});
   $('#tmAno').addEventListener('change',e=>{T.ano=Number(e.target.value);renderTeam()});
-  if(!members.length){$('#tmRows').innerHTML='<tr><td colspan="7" class="note">Nenhuma pessoa neste time ainda.'+(isAdmin?' Cadastre pessoas em Administração.':'')+'</td></tr>';$('#tmStats').innerHTML='';return}
+  if(canManage)renderGestao();
+  if(!members.length){$('#tmRows').innerHTML='<tr><td colspan="7" class="note">Nenhuma pessoa neste time ainda.'+(isAdmin?' Cadastre pessoas em Administração.':canManage?' Cadastre em "+ Nova pessoa", logo abaixo.':'')+'</td></tr>';$('#tmStats').innerHTML='';return}
   const rows=[];
   await runPool(members.map(p=>async()=>{try{rows.push({p,s:summarize(await api('GET','/api/estado?pessoa='+p.id),T.ano)})}catch(e){rows.push({p,err:e.message})}}),4);
   rows.sort((a,b)=>((b.s?b.s.t.pctOfTotal:-1)-(a.s?a.s.t.pctOfTotal:-1))||a.p.name.localeCompare(b.p.name));
@@ -1355,6 +1364,76 @@ async function renderTeam(){
   }).join('');
 }
 
+/* ---------- gestão do time pelo supervisor ---------- */
+let G={times:[],pessoas:[]};
+const pStatus=u=>!u.active?'<span class="st-off">Inativo</span>':!u.has_password?'<span class="st-pend">Convite pendente</span>':'<span class="st-ok">Ativo</span>'+(u.last_login_at?'<div class="sub">último acesso '+esc(fmtDate(u.last_login_at))+'</div>':'');
+async function renderGestao(){
+  const box=$('#gestao');if(!box)return;
+  box.innerHTML='<p class="note">Carregando…</p>';
+  try{G=await api('GET','/api/time/gestao')}catch(e){box.innerHTML='<div class="banner">'+esc(e.message)+'</div>';return}
+  const rows=G.pessoas.map(u=>{
+    const mine=u.role==='colaborador';
+    return '<tr data-gid="'+u.id+'"><td><b>'+esc(u.name)+'</b><div class="sub">'+esc(u.email)+(u.cargo?' · '+esc(u.cargo):'')+'</div></td><td>'+esc(u.team_name)+'</td><td>'+pStatus(u)+'</td><td class="sub">'+esc(u.created_by_name||'—')+'</td>'+
+      '<td>'+(mine?'<div class="acts"><button class="btn sm" data-gest="editUser">Editar</button>'+(u.active?'<button class="btn sm" data-gest="linkUser">'+(u.has_password?'Link de nova senha':'Link de convite')+'</button>':'')+'</div>'
+                 :'<span class="sub">'+esc(ROLE_LABEL[u.role])+' · alterado só pelo administrador</span>')+'</td></tr>';
+  }).join('');
+  box.innerHTML='<section style="display:flex;flex-direction:column;gap:12px;margin-top:8px">'+
+    '<div class="sec-h"><h2>Gerenciar meus times</h2><div class="inline"><button class="btn sm" data-gest="newTeam">+ Novo time</button>'+(G.times.length?'<button class="btn sm primary" data-gest="newUser">+ Nova pessoa</button>':'')+'</div></div>'+
+    (G.times.length?'<div class="ctrls">'+G.times.map(t=>'<span class="pill count">'+esc(t.name)+' · '+t.members+(t.members===1?' pessoa':' pessoas')+'</span><button class="btn sm ghost" data-gest="renTeam" data-gteam="'+t.id+'">Renomear</button>').join('')+'</div>':'')+
+    (G.pessoas.length?'<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Pessoa</th><th>Time</th><th>Situação</th><th>Cadastrado por</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      :(G.times.length?'<div class="banner info">Nenhuma pessoa nos seus times ainda. Clique em "+ Nova pessoa" para cadastrar e gerar o convite.</div>':''))+
+    '<p class="note">Você cadastra colaboradores nos seus times e gera o link para eles criarem a senha. Para cadastrar supervisores, trocar o e-mail de alguém ou trazer uma pessoa que já está em outro time, fale com o administrador.</p></section>';
+}
+function gestUserForm(u){
+  u=u||{};
+  const teamSel=u.team_id||(G.times.some(t=>t.id===T.team)?T.team:(G.times[0]&&G.times[0].id));
+  return '<form class="form" id="gForm">'+
+    '<div class="two"><label>Nome<input id="gName" required maxlength="120" value="'+esc(u.name||'')+'"></label>'+
+    '<label>E-mail<input id="gEmail" type="email" required value="'+esc(u.email||'')+'"'+(u.id?' disabled title="Só o administrador troca o e-mail"':'')+'></label></div>'+
+    '<div class="two"><label>Cargo<input id="gCargo" maxlength="120" value="'+esc(u.cargo||'')+'" placeholder="Ex.: Técnico de Campo"></label>'+
+    '<label>Time<select id="gTeam">'+G.times.map(t=>'<option value="'+t.id+'"'+(t.id===teamSel?' selected':'')+'>'+esc(t.name)+'</option>').join('')+'</select></label></div>'+
+    (u.id?'<label class="check"><input type="checkbox" id="gActive"'+(u.active?' checked':'')+'> Acesso ativo (desmarque para quem saiu da empresa)</label>':'<p class="note" style="margin:0">A pessoa entra como Colaborador e só vê as próprias metas.</p>')+
+    '<div class="err" id="gErr"></div>'+
+    '<div class="foot"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn primary">'+(u.id?'Salvar':'Cadastrar e gerar convite')+'</button></div></form>';
+}
+async function afterGestao(teamId){
+  try{S.me=await api('GET','/api/me')}catch(_){}
+  if(teamId)T.team=teamId;
+  renderNav('time');renderTeam();
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-gest]');if(!b)return;
+  const act=b.dataset.gest;
+  const uid=b.closest('[data-gid]')?.dataset.gid;
+  if(act==='newTeam'||act==='renTeam'){
+    const t=act==='renTeam'?G.times.find(x=>x.id===b.dataset.gteam):null;
+    modal('<h2>'+(t?'Renomear time':'Novo time')+'</h2><form class="form" id="gtForm"><label>Nome do time<input id="gtName" required maxlength="120" value="'+esc(t?t.name:'')+'" placeholder="Ex.: Infraestrutura"></label>'+
+      (t?'':'<p class="note" style="margin:0">Você será o supervisor deste time.</p>')+'<div class="err" id="gtErr"></div>'+
+      '<div class="foot"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>',m=>
+      m.querySelector('#gtForm').addEventListener('submit',async ev=>{ev.preventDefault();
+        try{const body={name:$('#gtName').value};
+          const r=t?await api('PATCH','/api/time/times/'+t.id,body):await api('POST','/api/time/times',body);
+          closeModal();toast(t?'Time renomeado.':'Time criado.');afterGestao(t?null:r.id)}
+        catch(x){m.querySelector('#gtErr').textContent=x.message}}));
+  }
+  if(act==='newUser'||act==='editUser'){
+    const u=uid?G.pessoas.find(x=>x.id===uid):null;
+    modal('<h2>'+(u?'Editar pessoa':'Nova pessoa no time')+'</h2>'+gestUserForm(u),m=>m.querySelector('#gForm').addEventListener('submit',async ev=>{
+      ev.preventDefault();
+      const body={name:$('#gName').value,cargo:$('#gCargo').value,team_id:$('#gTeam').value};
+      try{
+        if(u){if($('#gActive'))body.active=$('#gActive').checked;await api('PATCH','/api/time/pessoas/'+u.id,body);closeModal();toast('Dados salvos.')}
+        else{body.email=$('#gEmail').value;const r=await api('POST','/api/time/pessoas',body);showLink('Convite criado',r,r.usuario.name)}
+        afterGestao(null);
+      }catch(x){m.querySelector('#gErr').textContent=x.message}
+    }));
+  }
+  if(act==='linkUser'){
+    const u=G.pessoas.find(x=>x.id===uid);
+    try{const r=await api('POST','/api/time/pessoas/'+uid+'/link');showLink(u.has_password?'Link de nova senha':'Link de convite',r,u.name)}catch(x){toast(x.message)}
+  }
+});
+
 /* ---------- administração ---------- */
 let ADM={users:[],teams:[]};
 async function renderAdmin(){
@@ -1363,11 +1442,11 @@ async function renderAdmin(){
   v.innerHTML='<p class="note">Carregando…</p>';
   try{const [u,t]=await Promise.all([api('GET','/api/admin/usuarios'),api('GET','/api/admin/times')]);ADM={users:u.usuarios,teams:t.times}}
   catch(e){v.innerHTML='<div class="banner">'+esc(e.message)+'</div>';return}
-  const status=u=>!u.active?'<span class="st-off">Inativo</span>':!u.has_password?'<span class="st-pend">Convite pendente</span>':'<span class="st-ok">Ativo</span>'+(u.last_login_at?'<div class="sub">último acesso '+esc(fmtDate(u.last_login_at))+'</div>':'');
+  const status0=u=>!u.active?'<span class="st-off">Inativo</span>':!u.has_password?'<span class="st-pend">Convite pendente</span>':'<span class="st-ok">Ativo</span>'+(u.last_login_at?'<div class="sub">último acesso '+esc(fmtDate(u.last_login_at))+'</div>':'');
   v.innerHTML='<header class="top"><div><div class="eyebrow">Administração</div><h1>Pessoas e times</h1></div></header>'+
     '<section><div class="sec-h"><h2>Pessoas</h2><button class="btn sm primary" data-adm="newUser">+ Nova pessoa</button></div><div style="height:10px"></div>'+
     '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Pessoa</th><th>Perfil</th><th>Time</th><th>Situação</th><th></th></tr></thead><tbody>'+
-    ADM.users.map(u=>'<tr data-uid="'+u.id+'"><td><b>'+esc(u.name)+'</b><div class="sub">'+esc(u.email)+(u.cargo?' · '+esc(u.cargo):'')+'</div></td><td>'+esc(ROLE_LABEL[u.role])+'</td><td>'+esc(u.team_name||'—')+'</td><td>'+status(u)+'</td>'+
+    ADM.users.map(u=>'<tr data-uid="'+u.id+'"><td><b>'+esc(u.name)+'</b><div class="sub">'+esc(u.email)+(u.cargo?' · '+esc(u.cargo):'')+'</div></td><td>'+esc(ROLE_LABEL[u.role])+'</td><td>'+esc(u.team_name||'—')+'</td><td>'+status0(u)+(u.created_by_name?'<div class="sub">cadastrado por '+esc(u.created_by_name)+'</div>':'')+'</td>'+
       '<td><div class="acts"><button class="btn sm" data-adm="editUser">Editar</button><button class="btn sm" data-adm="linkUser">'+(u.has_password?'Link de nova senha':'Link de convite')+'</button></div></td></tr>').join('')+
     '</tbody></table></div></section>'+
     '<section><div class="sec-h"><h2>Times</h2><button class="btn sm primary" data-adm="newTeam">+ Novo time</button></div><div style="height:10px"></div>'+

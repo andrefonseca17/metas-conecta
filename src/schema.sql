@@ -62,3 +62,18 @@ CREATE TABLE IF NOT EXISTS photos (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS photos_owner_idx ON photos(owner_id);
+
+-- Quem cadastrou cada pessoa e cada time (para o administrador rastrear).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL;
+
+-- Registro de ações de gestão (cadastros, alterações, links de acesso).
+CREATE TABLE IF NOT EXISTS audit (
+  id        bigserial PRIMARY KEY,
+  actor_id  uuid REFERENCES users(id) ON DELETE SET NULL,
+  action    text NOT NULL,
+  target_id uuid,
+  detail    jsonb NOT NULL DEFAULT '{}'::jsonb,
+  at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_target_idx ON audit(target_id);

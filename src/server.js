@@ -256,6 +256,11 @@ async function activeAdmins(exceptId) {
   return (await one(`SELECT count(*)::int AS n FROM users WHERE role='admin' AND active AND id<>$1`, [exceptId])).n;
 }
 
+// Registra ações de gestão (quem fez o quê, com quem).
+const audit = (actor, action, targetId, detail = {}) =>
+  q('INSERT INTO audit(actor_id,action,target_id,detail) VALUES($1,$2,$3,$4)', [actor?.id || null, action, targetId || null, detail])
+    .catch(() => {});
+
 async function issueLink(req, user, purpose) {
   const token = await createLinkToken(user.id, purpose);
   const link = `${baseUrl(req)}/definir-senha?token=${token}`;
@@ -267,8 +272,10 @@ async function issueLink(req, user, purpose) {
 
 app.get('/api/admin/usuarios', { preHandler: admin }, async () => {
   const rows = (await q(`SELECT u.id,u.email,u.name,u.cargo,u.role,u.team_id,t.name AS team_name,u.active,
-                                u.last_login_at,(u.password_hash IS NOT NULL) AS has_password
-                           FROM users u LEFT JOIN teams t ON t.id=u.team_id ORDER BY u.name`)).rows;
+                                u.last_login_at,(u.password_hash IS NOT NULL) AS has_password,
+                                u.created_at,c.name AS created_by_name
+                           FROM users u LEFT JOIN teams t ON t.id=u.team_id LEFT JOIN users c ON c.id=u.created_by
+                          ORDER BY u.name`)).rows;
   return { usuarios: rows };
 });
 
@@ -299,8 +306,9 @@ app.post('/api/admin/usuarios', { preHandler: admin }, async (req) => {
   const d = readUserBody(req.body || {});
   if (await one('SELECT 1 FROM users WHERE email=$1', [d.email])) throw httpError(409, 'Já existe uma pessoa com este e-mail.');
   const u = await one(
-    `INSERT INTO users(email,name,cargo,role,team_id) VALUES($1,$2,$3,$4,$5) RETURNING id,email,name`,
-    [d.email, d.name, d.cargo || '', d.role, d.team_id || null]);
+    `INSERT INTO users(email,name,cargo,role,team_id,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,email,name`,
+    [d.email, d.name, d.cargo || '', d.role, d.team_id || null, req.user.id]);
+  await audit(req.user, 'pessoa.criar', u.id, { role: d.role, team_id: d.team_id || null });
   return { usuario: u, ...(await issueLink(req, u, 'convite')) };
 });
 
@@ -319,6 +327,7 @@ app.patch('/api/admin/usuarios/:id', { preHandler: admin }, async (req) => {
     await q(`UPDATE users SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [id, ...keys.map(k => d[k])]);
   }
   if (d.active === false) await q('DELETE FROM sessions WHERE user_id=$1', [id]);
+  await audit(req.user, 'pessoa.editar', id, d);
   return { ok: true };
 });
 
@@ -326,6 +335,7 @@ app.post('/api/admin/usuarios/:id/link', { preHandler: admin }, async (req) => {
   if (!isUuid(req.params.id)) throw httpError(400, 'Pessoa inválida.');
   const u = await one('SELECT id,email,name,password_hash FROM users WHERE id=$1', [req.params.id]);
   if (!u) throw httpError(404, 'Pessoa não encontrada.');
+  await audit(req.user, 'pessoa.link', u.id, { tipo: u.password_hash ? 'senha' : 'convite' });
   return issueLink(req, u, u.password_hash ? 'senha' : 'convite');
 });
 
@@ -341,7 +351,8 @@ function readTeamBody(b) {
 
 app.post('/api/admin/times', { preHandler: admin }, async (req) => {
   const d = readTeamBody(req.body || {});
-  const t = await one('INSERT INTO teams(name,supervisor_id) VALUES($1,$2) RETURNING id', [d.name, d.supervisor_id]);
+  const t = await one('INSERT INTO teams(name,supervisor_id,created_by) VALUES($1,$2,$3) RETURNING id', [d.name, d.supervisor_id, req.user.id]);
+  await audit(req.user, 'time.criar', null, { team_id: t.id, name: d.name });
   return { id: t.id };
 });
 
@@ -355,7 +366,106 @@ app.patch('/api/admin/times/:id', { preHandler: admin }, async (req) => {
 app.delete('/api/admin/times/:id', { preHandler: admin }, async (req) => {
   if (!isUuid(req.params.id)) throw httpError(400, 'Time inválido.');
   await q('DELETE FROM teams WHERE id=$1', [req.params.id]);
+  await audit(req.user, 'time.excluir', null, { team_id: req.params.id });
   return { ok: true };
+});
+
+// ---------- gestão do time pelo supervisor ----------
+// O supervisor cria os próprios times e cadastra/gerencia colaboradores neles.
+// Limites: só perfil Colaborador; só pessoas dos times que ele supervisiona;
+// não troca e-mail nem perfil; não "puxa" pessoas já cadastradas em outro lugar.
+const supervisor = async (req) => {
+  await auth(req);
+  if (!['supervisor', 'admin'].includes(req.user.role)) throw httpError(403, 'Apenas supervisores podem gerenciar times.');
+};
+
+async function ownTeam(req, teamId) {
+  if (!isUuid(teamId)) throw httpError(400, 'Escolha um dos seus times.');
+  const t = await one('SELECT id,name FROM teams WHERE id=$1 AND supervisor_id=$2', [teamId, req.user.id]);
+  if (!t) throw httpError(403, 'Você só pode usar times que você supervisiona.');
+  return t;
+}
+
+async function ownMember(req, userId) {
+  if (!isUuid(userId)) throw httpError(400, 'Pessoa inválida.');
+  const u = await one(
+    `SELECT u.id,u.email,u.name,u.role,u.password_hash,u.active FROM users u JOIN teams t ON t.id=u.team_id
+      WHERE u.id=$1 AND t.supervisor_id=$2`, [userId, req.user.id]);
+  if (!u) throw httpError(403, 'Esta pessoa não está em um time seu.');
+  if (u.role !== 'colaborador') throw httpError(403, 'Supervisores e administradores só podem ser alterados pelo administrador.');
+  return u;
+}
+
+app.get('/api/time/gestao', { preHandler: supervisor }, async (req) => {
+  const times = (await q(`SELECT t.id,t.name,(SELECT count(*)::int FROM users m WHERE m.team_id=t.id AND m.active) AS members
+                            FROM teams t WHERE t.supervisor_id=$1 ORDER BY t.name`, [req.user.id])).rows;
+  const pessoas = (await q(`SELECT u.id,u.email,u.name,u.cargo,u.role,u.team_id,t.name AS team_name,u.active,
+                                   u.last_login_at,(u.password_hash IS NOT NULL) AS has_password,c.name AS created_by_name
+                              FROM users u JOIN teams t ON t.id=u.team_id LEFT JOIN users c ON c.id=u.created_by
+                             WHERE t.supervisor_id=$1 AND u.id<>$1 ORDER BY t.name,u.name`, [req.user.id])).rows;
+  return { times, pessoas };
+});
+
+app.post('/api/time/times', { preHandler: supervisor }, async (req) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 120) throw httpError(400, 'Informe o nome do time.');
+  const t = await one('INSERT INTO teams(name,supervisor_id,created_by) VALUES($1,$2,$2) RETURNING id', [name, req.user.id]);
+  await audit(req.user, 'time.criar', null, { team_id: t.id, name });
+  return { id: t.id };
+});
+
+app.patch('/api/time/times/:id', { preHandler: supervisor }, async (req) => {
+  await ownTeam(req, req.params.id);
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 120) throw httpError(400, 'Informe o nome do time.');
+  await q('UPDATE teams SET name=$2 WHERE id=$1', [req.params.id, name]);
+  await audit(req.user, 'time.renomear', null, { team_id: req.params.id, name });
+  return { ok: true };
+});
+
+app.post('/api/time/pessoas', { preHandler: supervisor }, async (req) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  if (!name || name.length > 120) throw httpError(400, 'Informe o nome (até 120 caracteres).');
+  const email = cleanEmail(b.email);
+  if (!validEmail(email)) throw httpError(400, 'Informe um e-mail válido.');
+  const cargo = String(b.cargo || '').trim().slice(0, 120);
+  const team = await ownTeam(req, b.team_id);
+  if (await one('SELECT 1 FROM users WHERE email=$1', [email]))
+    throw httpError(409, 'Este e-mail já está cadastrado no sistema. Peça ao administrador para colocar a pessoa no seu time.');
+  const u = await one(
+    `INSERT INTO users(email,name,cargo,role,team_id,created_by) VALUES($1,$2,$3,'colaborador',$4,$5) RETURNING id,email,name`,
+    [email, name, cargo, team.id, req.user.id]);
+  await audit(req.user, 'pessoa.criar', u.id, { role: 'colaborador', team_id: team.id });
+  return { usuario: u, ...(await issueLink(req, u, 'convite')) };
+});
+
+app.patch('/api/time/pessoas/:id', { preHandler: supervisor }, async (req) => {
+  const cur = await ownMember(req, req.params.id);
+  const b = req.body || {};
+  const d = {};
+  if (b.name !== undefined) {
+    d.name = String(b.name || '').trim();
+    if (!d.name || d.name.length > 120) throw httpError(400, 'Informe o nome (até 120 caracteres).');
+  }
+  if (b.cargo !== undefined) d.cargo = String(b.cargo || '').trim().slice(0, 120);
+  if (b.team_id !== undefined) d.team_id = (await ownTeam(req, b.team_id)).id;
+  if (b.active !== undefined) d.active = !!b.active;
+  if (b.email !== undefined && cleanEmail(b.email) !== cur.email) throw httpError(403, 'Só o administrador pode trocar o e-mail de acesso.');
+  if (b.role !== undefined && b.role !== 'colaborador') throw httpError(403, 'Só o administrador pode mudar o perfil.');
+  const keys = Object.keys(d);
+  if (keys.length) await q(`UPDATE users SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [cur.id, ...keys.map(k => d[k])]);
+  if (d.active === false) await q('DELETE FROM sessions WHERE user_id=$1', [cur.id]);
+  await audit(req.user, 'pessoa.editar', cur.id, d);
+  return { ok: true };
+});
+
+app.post('/api/time/pessoas/:id/link', { preHandler: supervisor }, async (req) => {
+  const u = await ownMember(req, req.params.id);
+  if (!u.active) throw httpError(400, 'Esta pessoa está desativada. Ative o acesso antes de gerar o link.');
+  const tipo = u.password_hash ? 'senha' : 'convite';
+  await audit(req.user, 'pessoa.link', u.id, { tipo });
+  return issueLink(req, u, tipo);
 });
 
 // ---------- inicialização ----------
